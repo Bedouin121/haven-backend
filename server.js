@@ -71,6 +71,22 @@ const ProblemFix = mongoose.model('ProblemFix', problemFixSchema);
 
 // API Routes
 
+// Root route - Health check
+app.get('/', (req, res) => {
+  res.json({
+    message: '🏠 Tenant Management API',
+    status: 'running',
+    version: '1.0.0',
+    endpoints: {
+      tenants: '/api/tenants',
+      payments: '/api/payments',
+      problems: '/api/problems',
+      fixes: '/api/problem-fixes',
+      stats: '/api/stats'
+    }
+  });
+});
+
 // Tenants
 app.get('/api/tenants', async (req, res) => {
   try {
