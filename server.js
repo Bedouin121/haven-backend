@@ -10,12 +10,35 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Validate environment variables
+const requiredEnvVars = ['DB_USERNAME', 'DB_PASSWORD', 'DB_CLUSTER', 'DB_NAME'];
+const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
+
+if (missingEnvVars.length > 0) {
+  console.error('❌ Missing required environment variables:', missingEnvVars.join(', '));
+  console.error('📝 Please create a .env file in the haven-backend directory with the following variables:');
+  console.error('   DB_USERNAME=your_mongodb_username');
+  console.error('   DB_PASSWORD=your_mongodb_password');
+  console.error('   DB_CLUSTER=your_cluster.mongodb.net');
+  console.error('   DB_NAME=haven');
+  console.error('\n💡 You can copy .env.example to .env and fill in your MongoDB credentials.');
+  process.exit(1);
+}
+
 // MongoDB Connection
 const MONGO_URI = `mongodb+srv://${process.env.DB_USERNAME}:${process.env.DB_PASSWORD}@${process.env.DB_CLUSTER}/${process.env.DB_NAME}?retryWrites=true&w=majority`;
 
 mongoose.connect(MONGO_URI)
   .then(() => console.log('✅ Connected to MongoDB'))
-  .catch(err => console.error('❌ MongoDB connection error:', err));
+  .catch(err => {
+    console.error('❌ MongoDB connection error:', err.message);
+    console.error('\n💡 Troubleshooting tips:');
+    console.error('   1. Check your MongoDB credentials in the .env file');
+    console.error('   2. Ensure your IP address is whitelisted in MongoDB Atlas');
+    console.error('   3. Verify your cluster URL is correct');
+    console.error('   4. Check if your MongoDB Atlas cluster is running');
+    process.exit(1);
+  });
 
 // Schemas
 const tenantSchema = new mongoose.Schema({
@@ -90,7 +113,21 @@ app.get('/', (req, res) => {
 // Tenants
 app.get('/api/tenants', async (req, res) => {
   try {
-    const tenants = await Tenant.find().sort({ createdAt: -1 });
+    const { search } = req.query;
+    let query = {};
+    
+    if (search) {
+      query = {
+        $or: [
+          { fullName: { $regex: search, $options: 'i' } },
+          { unit: { $regex: search, $options: 'i' } },
+          { phone: { $regex: search, $options: 'i' } },
+          { building: { $regex: search, $options: 'i' } }
+        ]
+      };
+    }
+    
+    const tenants = await Tenant.find(query).sort({ createdAt: -1 });
     res.json(tenants);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -183,17 +220,50 @@ app.get('/api/stats', async (req, res) => {
     });
     
     const currentMonth = new Date().toISOString().slice(0, 7);
-    const monthlyRevenue = await Payment.aggregate([
-      { $match: { month: currentMonth } },
-      { $group: { _id: null, total: { $sum: '$amount' } } }
-    ]);
+    
+    // Get all tenants and their rent amounts
+    const tenants = await Tenant.find();
+    const totalExpectedRent = tenants.reduce((sum, t) => sum + t.rentAmount, 0);
+    
+    // Get payments for current month
+    const currentMonthPayments = await Payment.find({ month: currentMonth });
+    const totalPaidThisMonth = currentMonthPayments.reduce((sum, p) => sum + p.amount, 0);
+    
+    // Calculate paid/unpaid tenants
+    const paidTenantIds = new Set();
+    const partialTenantIds = new Set();
+    
+    currentMonthPayments.forEach(payment => {
+      const tenant = tenants.find(t => t._id.toString() === payment.tenantId.toString());
+      if (tenant) {
+        const tenantPayments = currentMonthPayments.filter(p => 
+          p.tenantId.toString() === tenant._id.toString()
+        );
+        const totalPaid = tenantPayments.reduce((sum, p) => sum + p.amount, 0);
+        
+        if (totalPaid >= tenant.rentAmount) {
+          paidTenantIds.add(tenant._id.toString());
+        } else {
+          partialTenantIds.add(tenant._id.toString());
+        }
+      }
+    });
+    
+    const paidCount = paidTenantIds.size;
+    const unpaidCount = totalTenants - paidCount - partialTenantIds.size;
+    const paymentPercentage = totalTenants > 0 ? Math.round((paidCount / totalTenants) * 100) : 0;
     
     const openProblems = await Problem.countDocuments({ resolved: false });
     
     res.json({
       totalTenants,
       activeLeases,
-      monthlyRevenue: monthlyRevenue[0]?.total || 0,
+      totalPaidThisMonth,
+      totalExpectedRent,
+      paidCount,
+      unpaidCount,
+      partialCount: partialTenantIds.size,
+      paymentPercentage,
       openProblems
     });
   } catch (error) {
