@@ -50,7 +50,17 @@ const tenantSchema = new mongoose.Schema({
   building: { type: String, required: true },
   leaseStart: { type: String, required: true },
   leaseEnd: { type: String, required: true },
-  rentAmount: { type: Number, required: true },
+  totalLeaseAmount: { type: Number, required: true },
+  numberOfPayments: { type: String, required: true }, // Changed to String for frequency names
+  paymentAmount: { type: Number, required: true },
+  paymentSchedule: [{
+    paymentNumber: Number,
+    dueDate: String,
+    windowStart: String,
+    windowEnd: String,
+    amount: Number
+  }],
+  rentAmount: { type: Number }, // Legacy field for backward compatibility
   securityDeposit: { type: Number, default: 0 },
   notes: String,
   createdAt: { type: Date, default: Date.now }
@@ -136,11 +146,161 @@ app.get('/api/tenants', async (req, res) => {
 
 app.post('/api/tenants', async (req, res) => {
   try {
+    // Calculate payment schedule if new format is provided
+    if (req.body.totalLeaseAmount && req.body.numberOfPayments && req.body.leaseStart && req.body.leaseEnd) {
+      const L = req.body.totalLeaseAmount; // Total lease amount
+      const leaseStart = new Date(req.body.leaseStart);
+      const leaseEnd = new Date(req.body.leaseEnd);
+      
+      // Calculate M in fractional months using actual days
+      const yearDiff = leaseEnd.getFullYear() - leaseStart.getFullYear();
+      const monthDiff = leaseEnd.getMonth() - leaseStart.getMonth();
+      const dayDiff = leaseEnd.getDate() - leaseStart.getDate();
+      const M = yearDiff * 12 + monthDiff + (dayDiff + 1) / 30.44;
+      
+      // Map payment frequency string to months
+      const frequencyMap = {
+        monthly: 1,
+        bimonthly: 2,
+        quarterly: 3,
+        fourmonthly: 4,
+        semiannual: 6,
+        annual: 12,
+        onetime: 0
+      };
+      
+      const F = frequencyMap[req.body.numberOfPayments];
+      
+      // Validation
+      if (L <= 0) {
+        return res.status(400).json({ error: 'Total lease amount must be greater than 0' });
+      }
+      if (M <= 0) {
+        return res.status(400).json({ error: 'Lease duration must be greater than 0' });
+      }
+      
+      let paymentSchedule = [];
+      let paymentAmount = 0;
+      
+      if (req.body.numberOfPayments === 'onetime') {
+        // One-time payment
+        paymentAmount = L;
+        paymentSchedule.push({
+          paymentNumber: 1,
+          dueDate: req.body.leaseStart,
+          windowStart: req.body.leaseStart,
+          windowEnd: req.body.leaseStart,
+          amount: Math.round(L * 100) / 100
+        });
+      } else {
+        // Calculate per-month payable P = L / M
+        const P = L / M;
+        
+        // Determine total periods (ceiling to handle non-divisible cases)
+        const totalPeriods = Math.ceil(M / F);
+        
+        // Helper function to count days between two dates (inclusive)
+        const countDays = (start, end) => {
+          const msPerDay = 1000 * 60 * 60 * 24;
+          return Math.round((end - start) / msPerDay) + 1;
+        };
+        
+        // Calculate the end of the first frequency block (last day of the Fth month from start month)
+        const firstBlockEnd = new Date(leaseStart.getFullYear(), leaseStart.getMonth() + F, 0);
+        
+        // Count days used in first period (from lease start to end of first frequency block)
+        const daysUsedInFirstPeriod = countDays(leaseStart, firstBlockEnd);
+        
+        // Count total days in full first frequency block (from 1st of start month to last day of Fth month)
+        const firstBlockStart = new Date(leaseStart.getFullYear(), leaseStart.getMonth(), 1);
+        const totalDaysInFirstBlock = countDays(firstBlockStart, firstBlockEnd);
+        
+        // Calculate first payment (prorated based on days used)
+        const firstPaymentRaw = (daysUsedInFirstPeriod / totalDaysInFirstBlock) * (P * F);
+        const firstPayment = Math.round(firstPaymentRaw * 100) / 100;
+        
+        // Remaining balance after first payment
+        const remainingBalance = L - firstPayment;
+        
+        // Remaining periods
+        const remainingPeriods = totalPeriods - 1;
+        
+        // Regular payment amount (evenly divided, rounded)
+        const regularPaymentRaw = remainingBalance / remainingPeriods;
+        const regularPayment = Math.round(regularPaymentRaw * 100) / 100;
+        
+        // Calculate final payment to ensure exact total
+        const sumOfRegularPayments = regularPayment * (remainingPeriods - 1);
+        const finalPayment = Math.round((L - firstPayment - sumOfRegularPayments) * 100) / 100;
+        
+        // Build payment schedule
+        for (let i = 0; i < totalPeriods; i++) {
+          let dueDate;
+          let amount;
+          
+          if (i === 0) {
+            // First payment due on lease start date
+            dueDate = new Date(leaseStart);
+            amount = firstPayment;
+          } else {
+            // Subsequent payments due on 5th of first month of each period
+            dueDate = new Date(leaseStart);
+            dueDate.setMonth(dueDate.getMonth() + (i * F));
+            dueDate.setDate(5);
+            
+            // Last payment gets the final calculated amount
+            amount = (i === totalPeriods - 1) ? finalPayment : regularPayment;
+          }
+          
+          paymentSchedule.push({
+            paymentNumber: i + 1,
+            dueDate: dueDate.toISOString().split('T')[0],
+            windowStart: dueDate.toISOString().split('T')[0],
+            windowEnd: dueDate.toISOString().split('T')[0],
+            amount: amount
+          });
+        }
+        
+        // Set average payment amount for display
+        paymentAmount = Math.round((L / totalPeriods) * 100) / 100;
+      }
+      
+      req.body.paymentAmount = paymentAmount;
+      req.body.paymentSchedule = paymentSchedule;
+      req.body.rentAmount = paymentAmount; // For backward compatibility
+    }
+    
     const tenant = new Tenant(req.body);
     await tenant.save();
     res.status(201).json(tenant);
   } catch (error) {
     res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/api/tenants', async (req, res) => {
+  try {
+    const { tenantIds } = req.body;
+    
+    if (!tenantIds || !Array.isArray(tenantIds) || tenantIds.length === 0) {
+      return res.status(400).json({ error: 'tenantIds array is required' });
+    }
+    
+    // Delete tenants
+    await Tenant.deleteMany({ _id: { $in: tenantIds } });
+    
+    // Delete associated payments
+    await Payment.deleteMany({ tenantId: { $in: tenantIds } });
+    
+    // Delete associated problems/maintenance issues
+    await Problem.deleteMany({ tenantId: { $in: tenantIds } });
+    
+    // Delete associated problem fixes
+    await ProblemFix.deleteMany({ tenantId: { $in: tenantIds } });
+    
+    res.json({ message: `Successfully deleted ${tenantIds.length} tenant(s) and associated data` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
