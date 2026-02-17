@@ -46,6 +46,8 @@ const tenantSchema = new mongoose.Schema({
   email: { type: String, required: true },
   phone: { type: String, required: true },
   eidNumber: String,
+  eidFrontImage: String, // EID front image URL
+  eidBackImage: String, // EID back image URL
   unit: { type: String, required: true },
   building: { type: String, required: true },
   leaseStart: { type: String, required: true },
@@ -73,6 +75,7 @@ const paymentSchema = new mongoose.Schema({
   amount: { type: Number, required: true },
   paymentDate: { type: String, required: true },
   method: String,
+  proofOfPaymentImage: String, // Proof of payment image URL
   notes: String,
   loggedAt: { type: Date, default: Date.now }, // When this payment was logged
   createdAt: { type: Date, default: Date.now }
@@ -83,6 +86,7 @@ const problemSchema = new mongoose.Schema({
   title: { type: String, required: true },
   type: { type: String, required: true },
   description: { type: String, required: true },
+  issueDocumentationImage: String, // Issue documentation image URL
   dateReported: { type: String, required: true },
   resolved: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
