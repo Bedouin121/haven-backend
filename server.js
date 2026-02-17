@@ -68,11 +68,13 @@ const tenantSchema = new mongoose.Schema({
 
 const paymentSchema = new mongoose.Schema({
   tenantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant', required: true },
-  month: { type: String, required: true },
+  month: { type: String }, // Legacy field, kept for backward compatibility
+  paymentScheduleId: { type: Number }, // Payment number from payment schedule
   amount: { type: Number, required: true },
   paymentDate: { type: String, required: true },
   method: String,
   notes: String,
+  loggedAt: { type: Date, default: Date.now }, // When this payment was logged
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -97,10 +99,29 @@ const problemFixSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+const addcBillSchema = new mongoose.Schema({
+  villaName: { type: String, required: true },
+  amount: { type: Number, required: true },
+  paymentMethod: { type: String, required: true }, // Cash, Check, Card
+  month: { type: String, required: true }, // YYYY-MM
+  year: { type: Number, required: true },
+  paymentDate: { type: String, required: true },
+  loggedAt: { type: Date, default: Date.now },
+  notes: String,
+  createdAt: { type: Date, default: Date.now }
+});
+
+const villaSchema = new mongoose.Schema({
+  name: { type: String, required: true, unique: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
 const Tenant = mongoose.model('Tenant', tenantSchema);
 const Payment = mongoose.model('Payment', paymentSchema);
 const Problem = mongoose.model('Problem', problemSchema);
 const ProblemFix = mongoose.model('ProblemFix', problemFixSchema);
+const ADDCBill = mongoose.model('ADDCBill', addcBillSchema);
+const Villa = mongoose.model('Villa', villaSchema);
 
 // API Routes
 
@@ -307,7 +328,14 @@ app.delete('/api/tenants', async (req, res) => {
 // Payments
 app.get('/api/payments', async (req, res) => {
   try {
-    const payments = await Payment.find().populate('tenantId').sort({ createdAt: -1 });
+    const { tenantId } = req.query;
+    let query = {};
+    
+    if (tenantId) {
+      query = { tenantId };
+    }
+    
+    const payments = await Payment.find(query).populate('tenantId').sort({ loggedAt: -1, createdAt: -1 });
     res.json(payments);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -366,6 +394,33 @@ app.post('/api/problem-fixes', async (req, res) => {
     await Problem.findByIdAndUpdate(req.body.problemId, { resolved: true });
     
     res.status(201).json(fix);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ADDC Bills
+app.get('/api/addc-bills', async (req, res) => {
+  try {
+    const { villaName, month, year } = req.query;
+    let query = {};
+    
+    if (villaName) query.villaName = villaName;
+    if (month) query.month = month;
+    if (year) query.year = parseInt(year);
+    
+    const bills = await ADDCBill.find(query).sort({ loggedAt: -1, createdAt: -1 });
+    res.json(bills);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/addc-bills', async (req, res) => {
+  try {
+    const bill = new ADDCBill(req.body);
+    await bill.save();
+    res.status(201).json(bill);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
